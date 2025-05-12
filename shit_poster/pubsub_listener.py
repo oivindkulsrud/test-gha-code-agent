@@ -2,6 +2,7 @@
 """
 PubSub listener module that uses default credentials to subscribe to a topic.
 Provides functions for subscribing to and processing messages from Google Cloud Pub/Sub.
+Integrated with GitHub issue posting functionality.
 """
 
 import os
@@ -10,6 +11,9 @@ from concurrent.futures import TimeoutError
 from google.cloud import pubsub_v1
 from google.auth import default
 from dotenv import load_dotenv
+
+# Import the GitHub issue posting function
+from issue_poster import post_github_issue
 
 def setup_subscriber(project_id, subscription_id):
     """
@@ -31,7 +35,7 @@ def setup_subscriber(project_id, subscription_id):
 
 def callback(message):
     """
-    Process received message from Pub/Sub.
+    Process received message from Pub/Sub and create a GitHub issue.
     
     Args:
         message: The message received from Pub/Sub
@@ -43,15 +47,31 @@ def callback(message):
         if message.data:
             data = json.loads(message.data.decode("utf-8"))
             print(f"Message data: {json.dumps(data, indent=2)}")
-        
-        # Print message attributes
-        if message.attributes:
-            print("Attributes:")
-            for key, value in message.attributes.items():
-                print(f"{key}: {value}")
-        
-        # Process the message here
-        # Add your custom processing logic
+            
+            # Create GitHub issue title and body from the message data
+            issue_title = f"PubSub Message: {data.get('subject', 'New Message')}"
+            
+            # Create a formatted message body
+            issue_body = "## PubSub Message Received\n\n"
+            issue_body += f"**Timestamp:** {data.get('timestamp', 'N/A')}\n\n"
+            issue_body += "### Message Content\n\n```json\n"
+            issue_body += json.dumps(data, indent=2)
+            issue_body += "\n```\n\n"
+            
+            # Add attributes to the issue body if they exist
+            if message.attributes:
+                issue_body += "### Message Attributes\n\n"
+                for key, value in message.attributes.items():
+                    issue_body += f"* **{key}:** {value}\n"
+            
+            # Post the GitHub issue
+            print(f"Creating GitHub issue with title: {issue_title}")
+            result = post_github_issue(issue_title, issue_body)
+            
+            if result and result.get("success"):
+                print(f"Successfully created GitHub issue #{result['issue_number']}")
+            else:
+                print("Failed to create GitHub issue")
         
         # Acknowledge the message
         message.ack()
@@ -68,7 +88,6 @@ def listen_for_messages(project_id, subscription_id):
     Args:
         project_id (str): Google Cloud project ID
         subscription_id (str): Pub/Sub subscription ID
-        timeout (float, optional): How long to listen for messages in seconds
     """
     subscriber, subscription_path = setup_subscriber(project_id, subscription_id)
     
@@ -90,4 +109,40 @@ def listen_for_messages(project_id, subscription_id):
             streaming_pull_future.cancel()  # Trigger the shutdown
             print(f"Listening stopped due to exception: {e}")
 
-# Module is imported by main.py
+
+def start_listener():
+    """
+    Load configuration from environment variables and start the PubSub listener.
+    This is the main entry point for the application, to be called from main.py.
+    """
+    # Load environment variables from .env file
+    load_dotenv()
+    
+    # Get configuration from environment variables
+    project_id = os.getenv("PROJECT_ID")
+    subscription_id = os.getenv("SUBSCRIPTION_ID")
+    
+    # Validate required parameters
+    if not project_id:
+        print("ERROR: PROJECT_ID must be specified in .env file")
+        return False
+    if not subscription_id:
+        print("ERROR: SUBSCRIPTION_ID must be specified in .env file")
+        return False
+    if not os.getenv("GITHUB_TOKEN"):
+        print("WARNING: GITHUB_TOKEN not found in .env file. GitHub issue creation will fail.")
+    if not os.getenv("GITHUB_REPOSITORY"):
+        print("WARNING: GITHUB_REPOSITORY not found in .env file. GitHub issue creation will fail.")
+    
+    print(f"Starting listener for project: {project_id}")
+    print(f"Subscription: {subscription_id}")
+    
+    try:
+        # Start listening for messages
+        listen_for_messages(project_id, subscription_id)
+        return True
+    except Exception as e:
+        print(f"ERROR: {e}")
+        return False
+
+# This module is imported by main.py
